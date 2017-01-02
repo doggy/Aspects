@@ -470,6 +470,7 @@ for (AspectIdentifier *aspect in aspects) {\
     } \
 }
 
+// Now is compatibe with TBHotpatch. No more crashes on `aspect_hookSelector:` to an instance. @振坤 105191
 static IMP retrieveForwardInvocation(__unsafe_unretained NSObject *self) {
     Class actualClass = object_getClass(self);
     
@@ -542,6 +543,7 @@ static void __ASPECTS_ARE_BEING_CALLED__(__unsafe_unretained NSObject *self, SEL
         }
         
         if (respondsToAlias) {
+            // Instead hooks. Part 1
             [invocation invoke];
         }
     }
@@ -551,6 +553,7 @@ static void __ASPECTS_ARE_BEING_CALLED__(__unsafe_unretained NSObject *self, SEL
         invocation.selector = originalSelector;
         void (*latestForwardInvocation)(id, SEL, NSInvocation *) = (__typeof__(latestForwardInvocation))retrieveForwardInvocation(self);
         
+        // Instead hooks. Part 2
         if (latestForwardInvocation != NULL) {
             latestForwardInvocation(self, originalSelector, invocation);
         }else {
