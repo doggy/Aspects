@@ -477,21 +477,20 @@ static IMP retrieveForwardInvocation(__unsafe_unretained NSObject *self) {
     // Fetch preserved forwardInvocation: from actualClass or its superclass
     SEL aliasForwardInvocationSEL = NSSelectorFromString(AspectsForwardInvocationSelectorName);
     Method preservedInvocationMethod = class_getInstanceMethod(actualClass, aliasForwardInvocationSEL);
-    void (*preservedInvocation)(id, SEL, NSInvocation *) = (__typeof__(preservedInvocation))method_getImplementation(preservedInvocationMethod);
+    IMP preservedInvocation = method_getImplementation(preservedInvocationMethod);
     
     // Fetch latest implementation of forwardInvocation: from originalClass
     Class originalClass = [self class];
     if (originalClass != actualClass) {
-        // Detect changing of aliasSelector we saved previously
+        // Detecting changes
         Method latestInvocationMethod = class_getInstanceMethod(originalClass, @selector(forwardInvocation:));
-        void (*latestInvocation)(id, SEL, NSInvocation *) = (__typeof__(latestInvocation))method_getImplementation(latestInvocationMethod);
-        if (preservedInvocation != latestInvocation) {
-            if (latestInvocation != NULL) {
-                preservedInvocation = latestInvocation;
-            }
+        IMP latestInvocation = method_getImplementation(latestInvocationMethod);
+        if (latestInvocation != NULL
+            && preservedInvocation != latestInvocation) {
+            preservedInvocation = latestInvocation;
         }
     }
-    return (IMP)preservedInvocation;
+    return preservedInvocation;
 }
 
 // This is the swizzled forwardInvocation: method.
@@ -511,29 +510,34 @@ static void __ASPECTS_ARE_BEING_CALLED__(__unsafe_unretained NSObject *self, SEL
     aspect_invoke(objectContainer.beforeAspects, info);
 
     // Instead hooks.
-    BOOL respondsToAlias = YES;
     if (objectContainer.insteadAspects.count || classContainer.insteadAspects.count) {
         aspect_invoke(classContainer.insteadAspects, info);
         aspect_invoke(objectContainer.insteadAspects, info);
     }else {
+        void (*latestForwardInvocation)(id, SEL, NSInvocation *) = (__typeof__(latestForwardInvocation))retrieveForwardInvocation(self);
+        
+        BOOL respondsToAlias = YES;
         Class klass = object_getClass(invocation.target);
         do {
             if ((respondsToAlias = [klass instancesRespondToSelector:aliasSelector])) {
                 break;
             }
         }while (!respondsToAlias && (klass = class_getSuperclass(klass)));
-        
+
         // Instance Method-Swizzling Detecter
         Class originalClass = [self class];
+        klass = object_getClass(self);
         if (originalClass != klass) {
             Method originalInvocationMethod = class_getInstanceMethod(originalClass, originalSelector);
             Method aliasInvocationMethod = class_getInstanceMethod(klass, aliasSelector);
             IMP originalInvocation = method_getImplementation(originalInvocationMethod);
             IMP aliasInvocation = method_getImplementation(aliasInvocationMethod);
             if (originalInvocation && originalInvocation != aliasInvocation) {
-                if (originalInvocation == _objc_msgForward) {
-                    // Hot-patch Detected
-                    respondsToAlias = NO;
+                if (aspect_isMsgForwardIMP(originalInvocation)) {
+                    if (latestForwardInvocation != __ASPECTS_ARE_BEING_CALLED__) {
+                        // New messages forwarder detected (Hot-patch applied mightly)
+                        respondsToAlias = NO;
+                    }
                 } else {
                     // update aliasSelector
                     const char *typeEncoding = method_getTypeEncoding(originalInvocationMethod);
@@ -543,21 +547,17 @@ static void __ASPECTS_ARE_BEING_CALLED__(__unsafe_unretained NSObject *self, SEL
         }
         
         if (respondsToAlias) {
-            // Instead hooks. Part 1
+            // call aliasSelector directly
             [invocation invoke];
-        }
-    }
-
-    // If no hooks are installed, call original implementation (usually to throw an exception)
-    if (!respondsToAlias) {
-        invocation.selector = originalSelector;
-        void (*latestForwardInvocation)(id, SEL, NSInvocation *) = (__typeof__(latestForwardInvocation))retrieveForwardInvocation(self);
-        
-        // Instead hooks. Part 2
-        if (latestForwardInvocation != NULL) {
-            latestForwardInvocation(self, originalSelector, invocation);
-        }else {
-            [self doesNotRecognizeSelector:invocation.selector];
+        } else {
+            // call origin selector with latest messages forwarder
+            if (latestForwardInvocation != NULL) {
+                invocation.selector = originalSelector;
+                latestForwardInvocation(self, originalSelector, invocation);
+            } else {
+                // If no hooks are installed, call original implementation (usually to throw an exception)
+                [self doesNotRecognizeSelector:originalSelector];
+            }
         }
     }
 
